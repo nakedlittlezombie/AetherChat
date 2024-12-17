@@ -1,0 +1,15 @@
+SECRET_KEY=14d6d5fef647b57bdff1ff9146a6c5f4f9fa95f436f1ae63db077c6e42209af4
+GOOGLE_CLIENT_ID=1074109076621-p4g3s3nnirdn59rqbqnkbtg5jjacvebb.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=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
+GOOGLE_REDIRECT_URI=https://yourwaifai.uk/auth/google/callback
+# Stripe API Keys
+STRIPE_SECRET_KEY=sk_live_xxx         # Your Stripe Secret Key
+STRIPE_PUBLISHABLE_KEY=pk_live_xxx    # Your Stripe Publishable Key
+STRIPE_WEBHOOK_SECRET=whsec_xxx       # Your Stripe Webhook Secret
+# Stripe Product/Price IDs
+STRIPE_CREATOR_PRICE_ID=price_xxx     # Price ID for Creator tier subscription
+STRIPE_MASTER_PRICE_ID=price_yyy      # Price ID for Master tier subscription
+# Optional: Test keys for development
+STRIPE_TEST_SECRET_KEY=sk_test_xxx    
+STRIPE_TEST_PUBLISHABLE_KEY=pk_test_xxx
+STRIPE_TEST_WEBHOOK_SECRET=whsec_xxx

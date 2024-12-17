@@ -23,22 +23,28 @@ async function loadCharacters() {
         const data = await response.json();
         console.log("Raw character data:", data);
 
-        // If user is logged in, they should see:
-        // 1. All public characters
-        // 2. Their private characters
-        // 3. Their pending characters
-        // If not logged in, they only see approved public characters
         characters = [];
         
         if (currentUser) {
+            // Load approved public characters
+            const publicChars = data.public || [];
+            
+            // Load user's private characters
+            const privateChars = data.private || [];
+            
+            // Load pending characters (only the user's own pending characters)
+            const pendingChars = (data.pending || []).filter(char => 
+                char.creator === currentUser.id
+            );
+            
             characters = [
-                ...(data.public || []),                // Public characters
-                ...(data.private || []),              // User's private characters
-                ...(data.pending?.filter(char =>      // User's pending characters
-                    char.creator_id === currentUser.id) || [])
+                ...publicChars,
+                ...privateChars,
+                ...pendingChars
             ];
         } else {
-            characters = [...(data.public || [])];    // Only approved public characters
+            // Only show approved public characters for non-logged in users
+            characters = data.public?.filter(char => char.isApproved) || [];
         }
 
         // Filter out null values and validate character objects
@@ -142,11 +148,7 @@ function filterCharacters() {
     return characters.filter((char) => {
         if (!char) return false;
         
-        // Debug log to see character structure
-        console.log("Filtering character:", char);
-
-        // Handle both possible property name formats
-        const name = char.name || char.characterId || '';
+        const name = char.name || '';
         const description = char.description || '';
         const category = char.category || '';
         const charTags = char.tags || [];
@@ -196,14 +198,18 @@ function createCharacterCard(char) {
     const tags = char.tags || [];
     const isPrivate = char.isPrivate || false;
     const isPending = char.approvalStatus === 'pending';
-    const isCreator = currentUser && char.creator_id === currentUser.id;
+    const isCreator = currentUser && char.creator === currentUser.id;
 
-    // Create status badge based on character status
+    // Status badge logic
     let statusBadge = '';
     if (isPrivate) {
         statusBadge = '<span class="private-badge">Private</span>';
-    } else if (isPending && isCreator) {
-        statusBadge = '<span class="pending-badge">Pending Approval</span>';
+    } else if (isPending) {
+        if (isCreator) {
+            statusBadge = '<span class="pending-badge">Pending Approval</span>';
+        } else {
+            return null; // Don't show pending characters from other users
+        }
     }
 
     const tagsHtml = tags
@@ -225,10 +231,10 @@ function createCharacterCard(char) {
     `;
 
     card.addEventListener('click', () => {
-        // Allow access if:
-        // 1. Character is public and approved
-        // 2. User is logged in and is the creator
-        // 3. User is logged in and character is pending approval but they're the creator
+        // Access rules:
+        // 1. Public and approved characters - everyone can access
+        // 2. Private characters - only creator can access
+        // 3. Pending characters - only creator can access
         if (!currentUser) {
             if (!isPending && !isPrivate) {
                 sessionStorage.setItem('selectedCharacter', JSON.stringify(char));
