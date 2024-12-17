@@ -8,24 +8,6 @@
 </head>
 <body>
     <div class="container">
-        <!-- New upload frame container section -->
-        <div id="uploadFrameContainer" style="display: none;">
-            <div class="upload-frame-wrapper">
-                <iframe id="uploadFrame" 
-                        style="width: 300px; height: 100px; border: 1px solid #ccc; display: none;"
-                        src="http://136.38.129.228:51000/upload.html">
-                </iframe>
-                <div id="uploadStatus" class="upload-status">
-                    <div class="upload-status-text">Initializing upload...</div>
-                    <div class="upload-progress">
-                        <div class="progress-bar">
-                            <div class="progress"></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
         <form id="characterForm" class="character-form">
             <h1>Create New Character</h1>
 
@@ -102,6 +84,21 @@
                     </select>
                 </div>
 
+                <!-- Voice Model Information Box -->
+                <div class="form-group">
+                    <div class="info-box">
+                        <h4>Voice Model Information</h4>
+                        <p>You can find RVC voice models at <a href="https://voice-models.com" target="_blank">voice-models.com</a>. 
+                           The site features over 30,000 unique voices for various characters.</p>
+                        <p>Important Notes:</p>
+                        <ul>
+                            <li>Extract any archives and upload only the .index and .pth files</li>
+                            <li>Model uploads can take several minutes to process</li>
+                            <li>Please be patient during the upload process</li>
+                        </ul>
+                    </div>
+                </div>
+
                 <!-- Existing Character Model Selection -->
                 <div id="existingModelSection" class="form-group" style="display: none;">
                     <label for="existingCharacterModel">Select Character Voice</label>
@@ -116,20 +113,13 @@
                     <div class="form-group">
                         <label for="modelFile">Model File (.pth)</label>
                         <input type="file" id="modelFile" name="modelFile" accept=".pth">
-                        <div class="progress-bar">
-                            <div class="progress"></div>
-                            <div class="progress-text"></div>
-                        </div>
+                        <div class="helper-text">Upload the RVC model file (.pth)</div>
                     </div>
                     <div class="form-group">
                         <label for="indexFile">Index File (.index)</label>
                         <input type="file" id="indexFile" name="indexFile" accept=".index">
-                        <div class="progress-bar">
-                            <div class="progress"></div>
-                            <div class="progress-text"></div>
-                        </div>
+                        <div class="helper-text">Upload the corresponding index file (.index)</div>
                     </div>
-                    <div class="helper-text">Upload new voice model files</div>
                 </div>
 
                 <div class="slider-control">
@@ -178,6 +168,14 @@
                         Make this character private
                     </label>
                     <div class="helper-text">Private characters are only visible to you</div>
+                </div>
+            </div>
+
+            <!-- Upload Status Container -->
+            <div id="uploadStatus" class="upload-status" style="display: none;">
+                <div class="upload-status-text">Uploading RVC model files... This may take a few minutes.</div>
+                <div class="upload-progress">
+                    <div class="progress"></div>
                 </div>
             </div>
 

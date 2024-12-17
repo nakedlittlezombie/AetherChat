@@ -1,6 +1,15 @@
 class CharacterCreator {
     constructor() {
         this.form = document.getElementById('characterForm');
+        this.uploadStatus = document.getElementById('uploadStatus');
+        
+        if (!this.uploadStatus) {
+            console.error('Upload status element not found');
+            return;
+        }
+        
+        this.uploadProgress = this.uploadStatus.querySelector('.progress');
+        
         console.log('CharacterCreator initialized');
         this.initializeForm();
         console.log('Loading available voices...');
@@ -8,13 +17,14 @@ class CharacterCreator {
         this.loadVoiceModels();
         this.setupVoiceModelHandling();
         this.setupEventListeners();
-        this.uploadProgress = this.uploadStatus.querySelector('.progress');
-        
-   
-
-        
-    
     }
+
+    updateUploadStatus(message, progress) {
+    if (this.uploadStatus && this.uploadProgress) {
+        this.uploadStatus.querySelector('.upload-status-text').textContent = message;
+        this.uploadProgress.style.width = `${progress}%`;
+    }
+}
 
     initializeForm() {
         this.form.addEventListener('submit', (e) => this.handleSubmit(e));
@@ -146,10 +156,14 @@ class CharacterCreator {
     }
 
     console.log('Starting model upload process...');
+    this.uploadStatus.style.display = 'block';
+    this.uploadProgress.style.width = '0%';
 
     try {
         // Upload model file first
-        console.log('Uploading model file...');
+        this.uploadStatus.querySelector('.upload-status-text').textContent = 'Uploading model file... This may take several minutes.';
+        this.uploadProgress.style.width = '25%';
+        
         const modelFormData = new FormData();
         modelFormData.append('modelFile', modelFile);
         modelFormData.append('characterId', characterId);
@@ -167,7 +181,9 @@ class CharacterCreator {
         }
 
         // Upload index file next
-        console.log('Uploading index file...');
+        this.uploadStatus.querySelector('.upload-status-text').textContent = 'Uploading index file...';
+        this.uploadProgress.style.width = '75%';
+        
         const indexFormData = new FormData();
         indexFormData.append('indexFile', indexFile);
         indexFormData.append('characterId', characterId);
@@ -184,11 +200,20 @@ class CharacterCreator {
             throw new Error(`Index file upload failed: ${errorText}`);
         }
 
+        this.uploadProgress.style.width = '100%';
+        this.uploadStatus.querySelector('.upload-status-text').textContent = 'Upload complete!';
+        
+        setTimeout(() => {
+            this.uploadStatus.style.display = 'none';
+        }, 2000);
+
         const result = await indexResponse.json();
         console.log('Model upload complete:', result);
         return result;
 
     } catch (error) {
+        this.uploadStatus.querySelector('.upload-status-text').textContent = 'Upload failed: ' + error.message;
+        this.uploadProgress.style.width = '0%';
         console.error('Model upload error:', error);
         throw error;
     }
