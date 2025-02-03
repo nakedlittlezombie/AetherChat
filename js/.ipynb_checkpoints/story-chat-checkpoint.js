@@ -5,18 +5,147 @@ import { generateCharacterImage, updatePanelBackground, animateTransition } from
 let characters = [], messages = [], isProcessing = false, audioEnabled = true;
 let currentAudioPlayer = null;
 let storySessionId = null;
-let storybookModeActive = false; // Add this line for storybook mode state
+let storybookModeActive = false;
+let characterQueue = [];
+let lastSpeakerId = null;
 const sessionId = window.location.pathname.split('/').pop();
+let story = null; 
 
 // Endless mode state
-let endlessModeActive = false;
 let endlessModeSettings = {
     delay: 5,
     maxTurns: 50,
     temperature: 0.8
 };
+let endlessModeActive = false;
 let currentTurn = 0;
 let endlessModeTimeout = null;
+
+class StoryState {
+    constructor(scenario, characters) {
+        this.scenario = scenario;
+        this.characters = characters;
+        this.currentPhase = 0;
+        this.completedEvents = new Set();
+        this.characterMoods = new Map();
+        this.lastSpeakers = new Set();
+        this.themes = this.analyzeScenario(scenario);
+    }
+
+    analyzeScenario(scenario) {
+        const keywords = scenario.toLowerCase().split(/\W+/);
+        const themes = new Set();
+        
+        const eventTypes = {
+            celebration: ['birthday', 'party', 'celebration', 'anniversary', 'wedding'],
+            adventure: ['quest', 'journey', 'adventure', 'mission', 'explore'],
+            conflict: ['fight', 'battle', 'argument', 'conflict', 'challenge'],
+            mystery: ['mystery', 'investigation', 'secret', 'puzzle', 'clue'],
+            social: ['meeting', 'gathering', 'conversation', 'hangout', 'date']
+        };
+
+        Object.entries(eventTypes).forEach(([type, words]) => {
+            if (words.some(word => keywords.includes(word))) {
+                themes.add(type);
+            }
+        });
+
+        if (themes.size === 0) themes.add('social');
+        return themes;
+    }
+
+    getRelevantPrompts() {
+        const prompts = [];
+        
+        this.themes.forEach(theme => {
+            switch(theme) {
+                case 'celebration':
+                    prompts.push(
+                        "How do the characters make the celebration more festive?",
+                        "What unexpected gift or surprise appears?",
+                        "How do the characters share in the joy of the moment?"
+                    );
+                    break;
+                case 'adventure':
+                    prompts.push(
+                        "What new challenge appears on their journey?",
+                        "How do the characters handle an unexpected obstacle?",
+                        "What discovery do they make along the way?"
+                    );
+                    break;
+                case 'conflict':
+                    prompts.push(
+                        "How do the characters try to resolve their differences?",
+                        "What raises the stakes in this situation?",
+                        "How do alliances shift in this moment?"
+                    );
+                    break;
+                case 'mystery':
+                    prompts.push(
+                        "What new clue comes to light?",
+                        "How do the characters react to a revelation?",
+                        "What makes the mystery deepen?"
+                    );
+                    break;
+                case 'social':
+                    prompts.push(
+                        "How do the characters bond in this moment?",
+                        "What reveals a new side of someone's personality?",
+                        "What brings the characters closer together or creates tension?"
+                    );
+                    break;
+            }
+        });
+
+        prompts.push(
+            "What unexpected event changes the dynamic?",
+            "How do the characters' personalities clash or complement each other?",
+            "What reveals something surprising about one of the characters?"
+        );
+
+        return prompts;
+    }
+
+    getStoryContext() {
+        return {
+            scenario: this.scenario,
+            themes: Array.from(this.themes),
+            phase: this.currentPhase,
+            recentEvents: Array.from(this.completedEvents).slice(-3)
+        };
+    }
+
+    updatePhase(message) {
+        const content = message.content.toLowerCase();
+        
+        // Track significant events
+        if (content.includes('arrive') || content.includes('begin') || content.includes('start')) {
+            this.completedEvents.add('introduction');
+        }
+        
+        // Update phase based on event progression
+        if (this.completedEvents.size > this.currentPhase * 3) {
+            this.currentPhase++;
+        }
+    }
+}
+
+// Update the global state
+let storyState = null;
+
+function adjustLayoutSizes() {
+    const gallery = document.querySelector('.storybook-gallery');
+    const panelsGrid = document.querySelector('.chat-panels-grid');
+    const userArea = document.querySelector('.user-chat-area');
+
+    if (!panelsGrid || !userArea) return;
+
+    const galleryHeight = storybookModeActive ? gallery?.offsetHeight || 0 : 0;
+    const userAreaHeight = userArea.offsetHeight;
+
+    // Update panels grid height
+    panelsGrid.style.height = `calc(100vh - ${galleryHeight + userAreaHeight + 20}px)`;
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
     if (!await checkAuth()) {
@@ -24,7 +153,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
     
+    // Load saved messages first
+    const savedMessages = localStorage.getItem(`story_${sessionId}_messages`);
+    if (savedMessages) {
+        const parsedMessages = JSON.parse(savedMessages);
+        parsedMessages.forEach(msg => addMessage(msg));
+    }
+
+    // Initialize everything else
     await Promise.all([
+        initializeNavigation(),
         loadSession(),
         initializeKoboldSession(),
         setupImageGallery()
@@ -33,27 +171,33 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupEventListeners();
     setupEndlessMode();
     setupStorybookMode();
+    adjustLayoutSizes();
+
+    window.addEventListener('resize', adjustLayoutSizes);
 });
 
 function setupImageGallery() {
-    // Add image gallery container above chat panels
-    const galleryHTML = `
-        <div id="storybook-gallery" class="storybook-gallery">
-            <div class="gallery-thumbnails"></div>
-            <div id="image-modal" class="image-modal">
-                <span class="close-modal">&times;</span>
-                <img class="modal-content" id="modal-image">
-            </div>
-        </div>
-    `;
-    
-    const panelsGrid = document.getElementById('panels-grid');
-    panelsGrid.insertAdjacentHTML('beforebegin', galleryHTML);
+    const gallery = document.querySelector('.gallery-thumbnails');
+    if (!gallery) return;
+
+    // Clear existing thumbnails
+    gallery.innerHTML = '';
 
     // Set up modal functionality
     const modal = document.getElementById('image-modal');
     const closeBtn = modal.querySelector('.close-modal');
-    closeBtn.onclick = () => modal.style.display = 'none';
+    closeBtn.onclick = () => {
+        modal.classList.remove('active');
+    };
+
+    // Close modal on outside click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            modal.classList.remove('active');
+        }
+    });
+
+    return gallery;
 }
 
 function addImageToGallery(imageData, character) {
@@ -70,12 +214,23 @@ function addImageToGallery(imageData, character) {
     // Add click handler for full-size view
     thumbnail.onclick = () => {
         const modal = document.getElementById('image-modal');
-        const modalImg = document.getElementById('modal-image');
-        modal.style.display = 'block';
+        const modalImg = modal.querySelector('.modal-content');
+        modal.classList.add('active');
         modalImg.src = `data:image/png;base64,${imageData}`;
-    };
+    }
 
-    gallery.appendChild(thumbnail);
+    // Add to start of gallery
+    gallery.insertBefore(thumbnail, gallery.firstChild);
+
+    // Scroll to the start to show new image
+    gallery.scrollLeft = 0;
+
+    // Optional: Remove older thumbnails if too many (e.g., keep last 20)
+    const maxThumbnails = 20;
+    const thumbnails = gallery.querySelectorAll('.gallery-thumbnail');
+    if (thumbnails.length > maxThumbnails) {
+        thumbnails[thumbnails.length - 1].remove();
+    }
 }
 
 
@@ -161,52 +316,6 @@ Create a visual description focusing on ${character.name} as the main subject, i
         return `portrait of ${character.name}, ${message.slice(0, 100)}, cinematic lighting, high quality, masterpiece`;
     }
 }
-// Session loading and UI setup
-async function loadSession() {
-    try {
-        const response = await fetch(`/story/sessions/${sessionId}`, {
-            credentials: 'include'
-        });
-        if (!response.ok) throw new Error('Failed to load session');
-
-        const data = await response.json();
-        characters = data.characters;
-
-        const charactersByPosition = new Array(4).fill(null);
-        characters.forEach(char => {
-            if (char.position >= 0 && char.position < 4) {
-                charactersByPosition[char.position] = char;
-            }
-        });
-
-        const panelsGrid = document.getElementById('panels-grid');
-        if (!panelsGrid) return;
-
-        panelsGrid.innerHTML = charactersByPosition.map((char, index) => {
-            const character = char || {
-                id: `empty-${index}`,
-                name: 'Loading...',
-                avatar: 'default-bg.jpg',
-                position: index
-            };
-
-            return `
-                <div class="chat-panel" data-position="${index}" data-character-id="${character.id}">
-                    <div class="panel-background" style="background-image: url('../${character.background || 'default-bg.jpg'}')"></div>
-                    <div class="panel-header">
-                        <img src="../${character.avatar}" alt="${character.name}" class="panel-avatar" 
-                             onerror="this.src='../avatars/default-user.png'">
-                        <span class="panel-name">${character.name}</span>
-                    </div>
-                    <div class="chat-messages" id="chat-messages-${index}"></div>
-                </div>
-            `;
-        }).join('');
-
-    } catch (error) {
-        console.error('Error loading session:', error);
-    }
-}
 
 // Message handling
 function addMessage(message) {
@@ -234,68 +343,115 @@ function addMessage(message) {
     localStorage.setItem(`story_${sessionId}_messages`, JSON.stringify(messages));
 }
 
-async function processMessage(message, temperature = 0.7) {
-    try {
-        await updateKoboldContext();
-        const response = await fetch('/v1/story/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({
-                session_id: sessionId,
-                message: message,
-                messages: messages.map(msg => ({
-                    role: msg.type === 'user' ? 'user' : 'assistant',
-                    content: msg.content
-                })),
-                temperature: temperature,
-                // Add these parameters to get better responses
-                max_tokens: 500,        // Allow longer responses
-                top_p: 0.9,            // More focused responses
-                frequency_penalty: 0.7, // Encourage variety
-                presence_penalty: 0.7,  // Encourage context usage
-                // Only use stop sequences that make sense
-                stop_sequences: ["\n\n"]  // Remove User: and Character: from stop sequences
-            })
-        });
-        if (!response.ok) {
-            if (response.status === 402) throw new Error('Insufficient credits');
-            throw new Error('Failed to get responses');
+
+
+async function generateCharacterResponses(message, temperature) {
+    const response = await fetch('/v1/story/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+            session_id: sessionId,
+            message: message,
+            messages: messages.map(msg => ({
+                role: msg.type === 'user' ? 'user' : 'assistant',
+                content: msg.content
+            })),
+            temperature: temperature
+        })
+    });
+
+    if (!response.ok) {
+        if (response.status === 402) {
+            throw new Error('Insufficient credits');
         }
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to get responses');
+    }
 
-        const data = await response.json();
-        const parsedResponses = parseCharacterResponses(data);
-        
-        for (const response of parsedResponses) {
-            addMessage(response);
+    const data = await response.json();
+    return parseCharacterResponses(data);
+}
 
-        if (storybookModeActive) {
-            const character = characters.find(c => c.id === response.character_id);
-            if (character) {
-                const recentContext = messages.slice(-3).map(msg => 
-                    `${msg.type === 'user' ? 'User' : msg.name}: ${msg.content}`
-                ).join('\n');
-        
-                // Show loading state in gallery
-                const removeLoading = showLoadingThumbnail(character);
-                
+async function generateFollowUpResponses(characters, previousResponses, temperature) {
+    // Create context from previous responses
+    const context = previousResponses.slice(-3).map(r => `${r.name}: ${r.content}`).join('\n');
+    
+    const response = await fetch('/v1/story/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+            session_id: sessionId,
+            message: context,
+            characters: characters.map(c => c.id),
+            messages: messages.map(msg => ({
+                role: msg.type === 'user' ? 'user' : 'assistant',
+                content: msg.content
+            })),
+            temperature: temperature
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error('Failed to generate follow-up responses');
+    }
+
+    const data = await response.json();
+    return parseCharacterResponses(data);
+}
+
+async function processCharacterResponse(response) {
+    addMessage(response);
+
+    if (storybookModeActive) {
+        const character = characters.find(c => c.id === response.character_id);
+        if (character) {
+            const recentContext = messages.slice(-3).map(msg => 
+                `${msg.type === 'user' ? 'User' : msg.name}: ${msg.content}`
+            ).join('\n');
+    
+            const removeLoading = showLoadingThumbnail(character);
+            try {
                 const imageData = await generateCharacterImage(character, response.content, recentContext);
                 if (imageData) {
                     addImageToGallery(imageData, character);
                 }
-        
-                // Remove loading state
+            } catch (error) {
+                console.error('Error generating image:', error);
+            } finally {
                 removeLoading();
             }
         }
-            if (audioEnabled) {
-                await playAudio(response);
-            }
-        }
-    } catch (error) {
-        console.error('Error in processMessage:', error);
-        throw error;
     }
+
+    if (audioEnabled) {
+        try {
+            await playAudio(response);
+        } catch (error) {
+            console.error('Error playing audio:', error);
+        }
+    }
+}
+
+function chooseNextSpeakers(lastResponse, availableCharacters) {
+    const speakers = [];
+    
+    // Check if any character was mentioned in the last response
+    availableCharacters.forEach(char => {
+        if (lastResponse.content.toLowerCase().includes(char.name.toLowerCase())) {
+            speakers.push(char);
+        }
+    });
+
+    // If no characters were mentioned, choose 1-2 random characters
+    if (!speakers.length && availableCharacters.length) {
+        const numSpeakers = Math.min(Math.floor(Math.random() * 2) + 1, availableCharacters.length);
+        const shuffled = availableCharacters.sort(() => Math.random() - 0.5);
+        speakers.push(...shuffled.slice(0, numSpeakers));
+    }
+
+    return speakers;
 }
 
 // Add this function to setup the storybook toggle
@@ -308,7 +464,8 @@ function setupStorybookMode() {
         document.body.classList.toggle('storybook-mode', storybookModeActive);
         storybookToggle.classList.toggle('active', storybookModeActive);
         
-        // If turning on storybook mode, regenerate images for recent messages
+        adjustLayoutSizes();
+        
         if (storybookModeActive) {
             regenerateRecentImages();
         }
@@ -382,41 +539,22 @@ function cleanUserMessage(message) {
 
 function parseCharacterResponses(data) {
     const responses = [];
-    if (!data || !Array.isArray(data.responses)) return responses;
+    if (!data || !Array.isArray(data.responses)) {
+        console.error('Invalid response data format:', data);
+        return responses;
+    }
 
     const characterNames = new Set(characters.map(char => char.name));
     
     for (const charResponse of data.responses) {
-        if (!charResponse || !charResponse.content) continue;
+        if (!charResponse || !charResponse.content || !charResponse.character_id) {
+            console.warn('Skipping invalid character response:', charResponse);
+            continue;
+        }
 
         let content = charResponse.content;
         
-        // Only clean up other character's dialogue, keep the current character's full response
-        characterNames.forEach(name => {
-            if (name !== charResponse.name) {
-                const regex = new RegExp(`${name}:\\s*[^\\n]*\\n?`, 'g');
-                content = content.replace(regex, '');
-            }
-        });
-
-        // Less aggressive cleanup to preserve more of the response
-        content = content
-            .replace(/User:\s*[^\n]*\n?/g, '')
-            .replace(/```/g, '')
-            .replace(/###[^#]+###/g, '')
-            .replace(/Next:.*/s, '')
-            .replace(/Let me know.*/s, '')
-            .replace(/Choose the response.*/s, '')
-            .replace(/^\s*$\n/gm, '')
-            .trim();
-
-        // Make sure asterisk expressions are properly closed
-        const asteriskCount = (content.match(/\*/g) || []).length;
-        if (asteriskCount % 2 !== 0) {
-            if (asteriskCount % 2 === 1) {
-                content += '*';
-            }
-        }
+        content = cleanResponseContent(content, characterNames, charResponse.name);
 
         if (content) {
             responses.push({
@@ -436,15 +574,127 @@ function parseCharacterResponses(data) {
     return responses;
 }
 
+function cleanResponseContent(content, characterNames, currentCharName) {
+    // Remove other characters' dialogue
+    characterNames.forEach(name => {
+        if (name !== currentCharName) {
+            const regex = new RegExp(`${name}:\\s*[^\\n]*\\n?`, 'g');
+            content = content.replace(regex, '');
+        }
+    });
 
-function setupEndlessMode() {
-    // Remove the HTML injection since controls already exist
-    setupEndlessModeListeners();
+    // Clean up common artifacts
+    content = content
+        .replace(/User:\s*[^\n]*\n?/g, '')
+        .replace(/```/g, '')
+        .replace(/###[^#]+###/g, '')
+        .replace(/Next:.*/s, '')
+        .replace(/Let me know.*/s, '')
+        .replace(/Choose the response.*/s, '')
+        .replace(/^\s*$\n/gm, '')
+        .trim();
+
+    // Ensure asterisk expressions are properly closed
+    const asteriskCount = (content.match(/\*/g) || []).length;
+    if (asteriskCount % 2 !== 0) {
+        content += '*';
+    }
+
+    return content;
 }
 
 
+async function initializeNavigation() {
+    const logoLink = document.querySelector('.logo-link');
+    if (logoLink) {
+        logoLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            window.location.href = '/';
+        });
+    }
 
-function setupEndlessModeListeners() {
+    const loggedInView = document.getElementById('logged-in-view');
+    const loggedOutView = document.getElementById('logged-out-view');
+    
+    if (currentUser) {
+        if (loggedInView && loggedOutView) {
+            loggedOutView.style.display = 'none';
+            loggedInView.style.display = 'block';
+            document.getElementById('username-display').textContent = currentUser.username;
+            updateCreditsDisplay();
+        }
+    }
+}
+
+function updateCreditsDisplay() {
+    const creditsDisplay = document.getElementById('credits-display');
+    if (creditsDisplay && currentUser?.credits !== undefined) {
+        creditsDisplay.textContent = `Credits: ${currentUser.credits}`;
+    }
+}
+
+// Update setupEndlessMode function
+async function loadSession() {
+    try {
+        const response = await fetch(`/story/sessions/${sessionId}`, {
+            credentials: 'include'
+        });
+        if (!response.ok) throw new Error('Failed to load session');
+
+        const data = await response.json();
+        characters = data.characters;
+        story = {
+            scenario: data.scenario,
+            title: data.title,
+            settings: data.settings
+        };
+
+        const charactersByPosition = new Array(4).fill(null);
+        characters.forEach(char => {
+            if (char.position >= 0 && char.position < 4) {
+                charactersByPosition[char.position] = char;
+            }
+        });
+
+        const panelsGrid = document.getElementById('panels-grid');
+        if (!panelsGrid) return;
+
+        // Add these lines to ensure proper layout
+        panelsGrid.style.marginLeft = 'var(--nav-width)';
+        panelsGrid.style.width = 'calc(100% - var(--nav-width))';
+
+        panelsGrid.innerHTML = charactersByPosition.map((char, index) => {
+            const character = char || {
+                id: `empty-${index}`,
+                name: 'Loading...',
+                avatar: 'default-bg.jpg',
+                position: index
+            };
+
+            return `
+                <div class="chat-panel" data-position="${index}" data-character-id="${character.id}">
+                    <div class="panel-background" style="background-image: url('../${character.background || 'default-bg.jpg'}')"></div>
+                    <div class="panel-header">
+                        <img src="../${character.avatar}" alt="${character.name}" class="panel-avatar" 
+                             onerror="this.src='../avatars/default-user.png'">
+                        <span class="panel-name">${character.name}</span>
+                    </div>
+                    <div class="chat-messages" id="chat-messages-${index}"></div>
+                </div>
+            `;
+        }).join('');
+
+        // Initialize storyState after loading story data
+        if (!storyState && story) {
+            storyState = new StoryState(story.scenario, characters);
+        }
+
+    } catch (error) {
+        console.error('Error loading session:', error);
+    }
+}
+
+function setupEndlessMode() {
     const toggleBtn = document.getElementById('endless-mode-toggle');
     const settingsBtn = document.getElementById('endless-mode-settings');
     const settingsPanel = document.getElementById('endless-mode-settings-panel');
@@ -453,10 +703,26 @@ function setupEndlessModeListeners() {
     const maxTurnsInput = document.getElementById('endless-max-turns');
     const temperatureInput = document.getElementById('endless-temperature');
     
-    toggleBtn.addEventListener('click', () => {
+    // Initialize story state if not already done and story is loaded
+    if (!storyState && story) {
+        storyState = new StoryState(story.scenario, characters);
+    }
+    
+    toggleBtn.addEventListener('click', async () => {
+        // Ensure story is loaded before allowing endless mode
+        if (!story) {
+            console.error('Story data not loaded yet');
+            return;
+        }
+
+        // Initialize storyState if needed
+        if (!storyState) {
+            storyState = new StoryState(story.scenario, characters);
+        }
+
         endlessModeActive = !endlessModeActive;
-        toggleBtn.textContent = endlessModeActive ? 'Stop Endless Mode' : 'Start Endless Mode';
-        toggleBtn.style.backgroundColor = endlessModeActive ? 'var(--error)' : 'var(--primary)';
+        toggleBtn.classList.toggle('active');
+        toggleBtn.querySelector('.button-icon').textContent = endlessModeActive ? '⏹️' : '🔄';
         
         if (endlessModeActive) {
             currentTurn = 0;
@@ -471,7 +737,7 @@ function setupEndlessModeListeners() {
     });
 
     settingsBtn.addEventListener('click', () => {
-        settingsPanel.style.display = settingsPanel.style.display === 'none' ? 'block' : 'none';
+        settingsPanel.classList.toggle('active');
     });
 
     delayInput.addEventListener('input', (e) => {
@@ -489,11 +755,126 @@ function setupEndlessModeListeners() {
         document.getElementById('endless-temperature-value').textContent = e.target.value;
     });
 
+    // Close settings when clicking outside
     document.addEventListener('click', (e) => {
-        if (!settingsPanel.contains(e.target) && e.target !== settingsBtn) {
-            settingsPanel.style.display = 'none';
+        if (settingsPanel.classList.contains('active') && 
+            !settingsPanel.contains(e.target) && 
+            e.target !== settingsBtn) {
+            settingsPanel.classList.remove('active');
         }
     });
+
+    // Handle escape key
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && settingsPanel.classList.contains('active')) {
+            settingsPanel.classList.remove('active');
+        }
+    });
+}
+
+
+
+// Update processMessage function
+async function processMessage(message, temperature = 0.7) {
+    try {
+        if (!storyState) {
+            storyState = new StoryState(story.scenario, characters);
+        }
+
+        const storyContext = storyState.getStoryContext();
+        await updateKoboldContext();
+        
+        const responses = await generateCharacterResponses(message, temperature, {
+            scenario: storyContext.scenario,
+            themes: storyContext.themes,
+            recentEvents: storyContext.recentEvents,
+            phase: storyContext.phase
+        });
+
+        if (!responses.length) {
+            throw new Error('No valid responses generated');
+        }
+
+        // Process responses
+        for (const response of responses) {
+            await processCharacterResponse(response);
+        }
+
+        // Update story state
+        storyState.updatePhase({ type: 'responses', content: responses.map(r => r.content).join(' ') });
+
+        // Generate follow-up interactions
+        const followUpRounds = Math.floor(Math.random() * 2) + 1;
+        let lastSpeakers = new Set(responses.map(r => r.character_id));
+        let availableCharacters = characters.filter(c => !lastSpeakers.has(c.id));
+
+        for (let i = 0; i < followUpRounds; i++) {
+            if (!availableCharacters.length) break;
+
+            const nextSpeakers = chooseNextSpeakers(responses[responses.length - 1], availableCharacters);
+            if (!nextSpeakers.length) break;
+
+            const followUpResponses = await generateFollowUpResponses(nextSpeakers, responses, temperature);
+            for (const response of followUpResponses) {
+                await processCharacterResponse(response);
+                lastSpeakers.add(response.character_id);
+            }
+
+            // Update story state with follow-up responses
+            storyState.updatePhase({ 
+                type: 'follow-up', 
+                content: followUpResponses.map(r => r.content).join(' ') 
+            });
+
+            availableCharacters = characters.filter(c => !lastSpeakers.has(c.id));
+        }
+
+        return responses;
+    } catch (error) {
+        console.error('Error in processMessage:', error);
+        throw error;
+    }
+}
+
+// Update startEndlessMode function
+async function startEndlessMode() {
+    if (!endlessModeActive || currentTurn >= endlessModeSettings.maxTurns) {
+        stopEndlessMode();
+        return;
+    }
+
+    try {
+        const prompts = storyState.getRelevantPrompts();
+        const prompt = prompts[Math.floor(Math.random() * prompts.length)];
+        const userMessage = await generateUserMessage(prompt);
+        
+        if (!userMessage) {
+            console.error('Failed to generate user message');
+            stopEndlessMode();
+            return;
+        }
+
+        addMessage({ 
+            type: 'user', 
+            content: userMessage,
+            id: `user-msg-${currentTurn}`
+        });
+
+        storyState.updatePhase({ type: 'user', content: userMessage });
+        await processMessage(userMessage, endlessModeSettings.temperature);
+        
+        currentTurn++;
+        
+        if (endlessModeActive) {
+            endlessModeTimeout = setTimeout(
+                startEndlessMode, 
+                endlessModeSettings.delay * 1000
+            );
+        }
+    } catch (error) {
+        console.error('Error in endless mode:', error);
+        stopEndlessMode();
+    }
 }
 
 async function generateUserMessage() {
@@ -521,42 +902,6 @@ async function generateUserMessage() {
     }
 }
 
-async function startEndlessMode() {
-    if (!endlessModeActive || currentTurn >= endlessModeSettings.maxTurns) {
-        stopEndlessMode();
-        return;
-    }
-
-    try {
-        const userMessage = await generateUserMessage();
-        if (!userMessage) {
-            console.error('Failed to generate user message');
-            stopEndlessMode();
-            return;
-        }
-
-        addMessage({ 
-            type: 'user', 
-            content: userMessage,
-            id: `user-msg-${currentTurn}`
-        });
-
-        await processMessage(userMessage, endlessModeSettings.temperature);
-        
-        currentTurn++;
-        
-        if (endlessModeActive) {
-            endlessModeTimeout = setTimeout(
-                startEndlessMode, 
-                endlessModeSettings.delay * 1000
-            );
-        }
-
-    } catch (error) {
-        console.error('Error in endless mode:', error);
-        stopEndlessMode();
-    }
-}
 
 function stopEndlessMode() {
     endlessModeActive = false;
@@ -571,8 +916,8 @@ function stopEndlessMode() {
     
     const toggleBtn = document.getElementById('endless-mode-toggle');
     if (toggleBtn) {
-        toggleBtn.textContent = 'Start Endless Mode';
-        toggleBtn.style.backgroundColor = 'var(--primary)';
+        toggleBtn.classList.remove('active');
+        toggleBtn.querySelector('.button-icon').textContent = '🔄';
     }
 }
 
@@ -618,7 +963,8 @@ function setupEventListeners() {
     const audioToggle = document.querySelector('.audio-toggle');
 
     sendButton?.addEventListener('click', sendMessage);
-     userInput?.addEventListener('keypress', (e) => {
+
+    userInput?.addEventListener('keypress', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             sendMessage();
@@ -627,10 +973,44 @@ function setupEventListeners() {
 
     audioToggle?.addEventListener('click', () => {
         audioEnabled = !audioEnabled;
-        audioToggle.textContent = audioEnabled ? '🔊' : '🔇';
+        audioToggle.classList.toggle('active');
+        audioToggle.querySelector('.button-icon').textContent = audioEnabled ? '🔊' : '🔇';
+        
         if (!audioEnabled && currentAudioPlayer) {
             currentAudioPlayer.pause();
             currentAudioPlayer = null;
+        }
+    });
+
+    // Handle settings panel close on outside click
+    document.addEventListener('click', (e) => {
+        const settingsPanel = document.getElementById('endless-mode-settings-panel');
+        const settingsBtn = document.getElementById('endless-mode-settings');
+        
+        if (settingsPanel?.classList.contains('active') && 
+            !settingsPanel.contains(e.target) && 
+            e.target !== settingsBtn) {
+            settingsPanel.classList.remove('active');
+        }
+    });
+
+    // Add resize observer for dynamic content
+    const resizeObserver = new ResizeObserver(adjustLayoutSizes);
+    document.querySelectorAll('.chat-messages').forEach(el => resizeObserver.observe(el));
+
+    // ESC key handler for modals
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            // Close image modal if open
+            const imageModal = document.getElementById('image-modal');
+            if (imageModal?.classList.contains('active')) {
+                imageModal.classList.remove('active');
+            }
+            // Close settings panel if open
+            const settingsPanel = document.getElementById('endless-mode-settings-panel');
+            if (settingsPanel?.classList.contains('active')) {
+                settingsPanel.classList.remove('active');
+            }
         }
     });
 }
@@ -664,25 +1044,17 @@ async function sendMessage() {
     }
 }
 
-// Load saved messages from localStorage on initialization
-document.addEventListener('DOMContentLoaded', async () => {
-    if (!await checkAuth()) {
-        openAuthModal('login');
-        return;
-    }
-    
-    const savedMessages = localStorage.getItem(`story_${sessionId}_messages`);
-    if (savedMessages) {
-        const parsedMessages = JSON.parse(savedMessages);
-        parsedMessages.forEach(msg => addMessage(msg));
-    }
-    
-
-});
-
 export {
     loadSession,
     addMessage,
     sendMessage,
-    playAudio
+    playAudio,
+    adjustLayoutSizes,
+    processMessage,
+    parseCharacterResponses,
+    cleanResponseContent,
+    generateCharacterResponses,
+    generateFollowUpResponses,
+    processCharacterResponse,
+    chooseNextSpeakers
 };
